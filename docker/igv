@@ -1,0 +1,73 @@
+#!/bin/sh
+set -eu
+
+IGV_VERSION="${IGV_VERSION:-2.19.7}"
+IGV_HOME="${IGV_HOME:-/opt/igv}"
+IGV_JAVA_XMX="${IGV_JAVA_XMX:-4g}"
+
+usage() {
+    cat <<EOF
+igv - direct Java launcher for IGV ${IGV_VERSION}
+
+Usage:
+  igv [igv-args...]
+  igv --version
+  igv --help
+
+This command starts the IGV desktop application when an X display is
+available. In TAFFISH, use igv-gui for a browser-accessible noVNC session:
+
+  taf-igv igv-gui
+
+Examples:
+  igv --genome hg38
+  igv session.xml
+  igv batch_script.txt
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    -v|--version)
+        printf 'IGV %s\n' "$IGV_VERSION"
+        exit 0
+        ;;
+esac
+
+if [ -z "${DISPLAY:-}" ]; then
+    cat >&2 <<EOF
+igv: no X DISPLAY is available.
+
+For TAFFISH browser access, map the noVNC port and run:
+  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" taf-igv igv-gui
+
+For headless preprocessing utilities, use:
+  taf-igv igvtools <command> ...
+EOF
+    exit 2
+fi
+
+export HOME="${HOME:-/root}"
+mkdir -p "$HOME/.igv"
+
+if [ -e "$HOME/.igv/java_arguments" ]; then
+    java --module-path="${IGV_HOME}/lib" "-Xmx${IGV_JAVA_XMX}" \
+        @"${IGV_HOME}/igv.args" \
+        -Dsamjdk.snappy.disable=true \
+        -Dapple.laf.useScreenMenuBar=true \
+        -Djava.net.preferIPv4Stack=true \
+        -Djava.net.useSystemProxies=true \
+        @"$HOME/.igv/java_arguments" \
+        --module=org.igv/org.broad.igv.ui.Main "$@"
+else
+    java --module-path="${IGV_HOME}/lib" "-Xmx${IGV_JAVA_XMX}" \
+        @"${IGV_HOME}/igv.args" \
+        -Dsamjdk.snappy.disable=true \
+        -Dapple.laf.useScreenMenuBar=true \
+        -Djava.net.preferIPv4Stack=true \
+        -Djava.net.useSystemProxies=true \
+        --module=org.igv/org.broad.igv.ui.Main "$@"
+fi

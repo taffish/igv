@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+IGV_HOME="${IGV_HOME:-/opt/igv}"
+IGVTOOLS_JAVA_XMX="${IGVTOOLS_JAVA_XMX:-1500m}"
+
+export HOME="${HOME:-/root}"
+mkdir -p "$HOME/.igv"
+
+if [ -e "$HOME/.igv/java_arguments" ]; then
+    java -Djava.awt.headless=true \
+        -Dsamjdk.snappy.disable=true \
+        --module-path="${IGV_HOME}/lib" \
+        "-Xmx${IGVTOOLS_JAVA_XMX}" \
+        @"$HOME/.igv/java_arguments" \
+        --module=org.igv/org.broad.igv.tools.IgvTools "$@"
+else
+    java -Djava.awt.headless=true \
+        -Dsamjdk.snappy.disable=true \
+        --module-path="${IGV_HOME}/lib" \
+        "-Xmx${IGVTOOLS_JAVA_XMX}" \
+        --module=org.igv/org.broad.igv.tools.IgvTools "$@"
+fi

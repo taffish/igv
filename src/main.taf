@@ -1,0 +1,2 @@
+<taf-app:container:ghcr.io/taffish/igv:2.19.7-r1$@[docker: --init][podman: --init]>
+igv ::*ARGV*::

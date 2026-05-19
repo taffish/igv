@@ -1,0 +1,49 @@
+[package]
+name = "igv"
+kind = "tool"
+version = "2.19.7"
+release = 1
+license = "Apache-2.0"
+main = "src/main.taf"
+
+[meta]
+domain = "bio"
+categories = ["genomics", "genome-browser", "variant-review", "visualization", "viewer"]
+keywords = ["igv", "integrative-genomics-viewer", "genome-browser", "bam", "cram", "vcf", "bed", "gff", "bigwig", "novnc", "vnc"]
+description = "IGV Desktop 2.19.7 for interactive genome browsing and variant review through a browser-accessible noVNC session, with IGVTools utilities included."
+
+[repository]
+url = "https://github.com/taffish/igv"
+
+[command]
+name = "taf-igv"
+
+[runtime]
+pipe = true
+command_mode = true
+
+[container]
+image = "ghcr.io/taffish/igv:2.19.7-r1"
+dockerfile = "docker/Dockerfile"
+build_platforms = "linux/amd64,linux/arm64"
+
+[upstream]
+name = "Integrative Genomics Viewer"
+type = "github"
+repo = "igvteam/igv"
+homepage = "https://igv.org/doc/desktop/"
+release_url = "https://github.com/igvteam/igv/tree/v2.19.7"
+downloads = "https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.7.zip"
+version = "2.19.7"
+license = "MIT"
+citation = "Thorvaldsdottir, Robinson, and Mesirov. 2013. Integrative Genomics Viewer (IGV): high-performance genomics data visualization and exploration."
+doi = "10.1093/bib/bbs017"
+pmid = "22517427"
+watch = "tags"
+strip_prefix = "v"
+
+[smoke]
+backend = "docker"
+timeout = 240
+exist = ["igv", "igv-gui", "igvtools", "igvtools_gui", "igvtools_gui_hidpi", "java", "Xvfb", "xvfb-run", "x11vnc", "websockify", "openbox", "curl", "unzip", "sh"]
+test = ["igv --version | grep -Fx 'IGV 2.19.7' >/dev/null && java -version 2>&1 | grep -F '21.' >/dev/null && test -s /opt/igv/lib/igv.jar", "igv --help | grep -F 'direct Java launcher for IGV 2.19.7' >/dev/null && igv-gui --help | grep -F 'browser-accessible noVNC session' >/dev/null", "igv 2>&1 | grep -F 'no X DISPLAY is available' >/dev/null", "igvtools version | grep -F 'IGV Version 2.19.7' >/dev/null && igvtools 2>&1 | grep -F 'Usage: igvtools' >/dev/null && igvtools help sort 2>&1 | grep -F 'igvtools  sort' >/dev/null", "mkdir -p /tmp/taf-igv-smoke && cd /tmp/taf-igv-smoke && printf 'chr1\\t10\\t20\\tb\\nchr1\\t1\\t5\\ta\\n' > unsorted.bed && igvtools sort unsorted.bed sorted.bed >/tmp/taf-igvtools-sort.log 2>&1 && printf 'chr1\\t1\\t5\\ta\\nchr1\\t10\\t20\\tb\\n' > expected.bed && cmp expected.bed sorted.bed", "igv-gui --help >/dev/null && (IGV_JAVA_XMX=1024m igv-gui --geometry 800x600 >/tmp/taf-igv-gui.log 2>&1 & pid=$!; ok=0; i=0; while [ $i -lt 45 ]; do if curl -fs http://127.0.0.1:5801/vnc.html >/dev/null 2>&1; then ok=1; break; fi; i=$((i + 1)); sleep 1; done; kill $pid 2>/dev/null || true; wait $pid >/dev/null 2>&1 || true; test $ok -eq 1 && grep -F 'http://127.0.0.1:5801/vnc.html?autoconnect=1&resize=scale' /tmp/taf-igv-gui.log >/dev/null && grep -F 'IGV GUI is starting.' /tmp/taf-igv-gui.log >/dev/null)"]
