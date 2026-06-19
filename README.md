@@ -4,7 +4,7 @@ TAFFISH wrapper for [Integrative Genomics Viewer](https://igv.org/doc/desktop/),
 the desktop genome browser for interactive inspection of alignments, variants,
 annotations, coverage tracks, and genome browser sessions.
 
-This app packages upstream IGV Desktop `2.19.7` from the official all-platform
+This app packages upstream IGV Desktop `2.19.8` from the official all-platform
 zip distribution. It provides:
 
 - `igv-gui`: a browser-accessible noVNC GUI session for normal TAFFISH use.
@@ -16,6 +16,12 @@ zip distribution. It provides:
 IGV is especially useful in TAFFISH because large BAM/CRAM/VCF/BigWig datasets
 often live on a server or cluster, while the visual review still needs an
 interactive browser-like interface.
+
+Release `2.19.8-r1` updates the packaged IGV Desktop distribution from
+`2.19.7` to `2.19.8`. Upstream `2.19.8` adds HGVS search support and includes
+search, chromosome aliasing, file-dialog, genome URL, and track configuration
+fixes. The TAFFISH GUI/noVNC helper, Java 21 runtime route, and IGVTools
+packaging design are unchanged.
 
 ## Installation
 
@@ -29,7 +35,7 @@ taf install igv
 Install the exact release:
 
 ```sh
-taf install igv 2.19.7-r1
+taf install igv 2.19.8-r1
 ```
 
 For local testing before the app is published to the public index:
@@ -150,11 +156,11 @@ headless IGVTools runs.
 ```text
 name: igv
 command: taf-igv
-version: 2.19.7-r1
+version: 2.19.8-r1
 kind: tool
-image: ghcr.io/taffish/igv:2.19.7-r1
-upstream: IGV Desktop v2.19.7
-runtime version: IGV 2.19.7
+image: ghcr.io/taffish/igv:2.19.8-r1
+upstream: IGV Desktop v2.19.8
+runtime version: IGV 2.19.8
 ```
 
 ## Container
@@ -162,8 +168,14 @@ runtime version: IGV 2.19.7
 The container image is built from `docker/Dockerfile`. It starts from
 `debian:12-slim`, installs the GUI/noVNC runtime, downloads a fixed
 multi-architecture Eclipse Temurin Java 21 JRE tarball for the current build
-architecture, then downloads the official IGV `IGV_2.19.7.zip` distribution.
+architecture, then downloads the official IGV `IGV_2.19.8.zip` distribution.
 Both downloads are verified with SHA-256 checksums.
+
+The IGV `2.19.8` distribution checksum used by this release is:
+
+```text
+7476fc44f15788f52dfe1d40e99748c7aedcb9dbf6a91f7634a81344e50d07a6
+```
 
 It provides:
 
@@ -230,7 +242,7 @@ The TAFFISH metadata declares Docker smoke checks that verify:
 
 ```text
 exist: igv, igv-gui, igvtools, Java 21, Xvfb, x11vnc, websockify, openbox
-test:  IGV launcher reports version 2.19.7
+test:  IGV launcher reports version 2.19.8
 test:  Java 21 is available
 test:  launcher and GUI helper help are available
 test:  direct launcher gives a clear message when no X display exists
@@ -251,8 +263,8 @@ inspection with representative BAM/CRAM/VCF/track/session datasets.
 project: Integrative Genomics Viewer
 homepage: https://igv.org/doc/desktop/
 source:   https://github.com/igvteam/igv
-release:  https://github.com/igvteam/igv/tree/v2.19.7
-download: https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.7.zip
+release:  https://github.com/igvteam/igv/tree/v2.19.8
+download: https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.8.zip
 license:  MIT
 citation: Thorvaldsdottir, Robinson, and Mesirov. 2013. Integrative Genomics Viewer (IGV): high-performance genomics data visualization and exploration
 doi:      10.1093/bib/bbs017

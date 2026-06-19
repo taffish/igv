@@ -26,13 +26,16 @@ ARG TEMURIN_TAG=jdk-21.0.9%2B10
 ARG TEMURIN_VERSION=21.0.9_10
 ARG TEMURIN_X64_SHA256=aeab55d064a1a27a3744b0880b9b414077b4ed2b1790817eea3df60aec946431
 ARG TEMURIN_AARCH64_SHA256=1d041073c65e834bdb4da732485a54ff829859dcd1549e7992f15bd73341be29
-ARG IGV_VERSION=2.19.7
-ARG IGV_ZIP_SHA256=692ae6c3037a6633c33afdbbe960a715f537173f26a16f56a58cb9ccbe163e9f
+ARG IGV_VERSION=2.19.8
+ARG IGV_ZIP_SHA256=7476fc44f15788f52dfe1d40e99748c7aedcb9dbf6a91f7634a81344e50d07a6
 
 RUN apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       ca-certificates \
       curl \
+ && sed -i 's|http://deb.debian.org/debian|https://deb.debian.org/debian|g; s|http://deb.debian.org/debian-security|https://deb.debian.org/debian-security|g' /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       dbus-x11 \
       fonts-dejavu-core \
       fontconfig \
@@ -115,7 +118,7 @@ RUN set -eux; \
 WORKDIR /root
 
 ENV IGV_HOME=/opt/igv
-ENV IGV_VERSION=2.19.7
+ENV IGV_VERSION=2.19.8
 ENV IGV_JAVA_XMX=4g
 ENV TAFFISH_ENV=TAFFISH
 ENV TAFFISH_NAME=igv

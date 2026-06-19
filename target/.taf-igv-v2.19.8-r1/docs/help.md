@@ -1,4 +1,4 @@
-taf-igv 2.19.7-r1
+taf-igv 2.19.8-r1
 
 TAFFISH wrapper for IGV Desktop, an interactive genome browser for alignments,
 variants, annotations, coverage tracks, and genome browser sessions.
@@ -75,7 +75,9 @@ The direct launcher requires an X display. For normal TAFFISH use, prefer the
 igv-gui helper because it creates Xvfb, x11vnc, and noVNC for you.
 
 Notes:
-  - This app packages upstream IGV Desktop v2.19.7.
+  - This app packages upstream IGV Desktop v2.19.8.
+  - Upstream 2.19.8 adds HGVS search support and related search, aliasing,
+    file-dialog, genome URL, and track-configuration fixes.
   - Java 21 is included through a fixed Eclipse Temurin JRE tarball.
   - IGVTools is included because it is part of the official IGV distribution.
   - The igvtools launcher calls the upstream Java module directly to avoid
@@ -89,7 +91,7 @@ Notes:
     behavior vary across clusters.
 
 Container:
-  image: ghcr.io/taffish/igv:2.19.7-r1
+  image: ghcr.io/taffish/igv:2.19.8-r1
   supported backends: apptainer, podman, docker
   supported native platforms: linux/amd64, linux/arm64
 
@@ -97,8 +99,8 @@ Upstream:
   project: Integrative Genomics Viewer
   homepage: https://igv.org/doc/desktop/
   source:   https://github.com/igvteam/igv
-  release:  https://github.com/igvteam/igv/tree/v2.19.7
-  download: https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.7.zip
+  release:  https://github.com/igvteam/igv/tree/v2.19.8
+  download: https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.8.zip
   license: MIT
   citation: Thorvaldsdottir, Robinson, and Mesirov. 2013
   doi: 10.1093/bib/bbs017

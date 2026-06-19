@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-IGV_VERSION="${IGV_VERSION:-2.19.7}"
+IGV_VERSION="${IGV_VERSION:-2.19.8}"
 IGV_HOME="${IGV_HOME:-/opt/igv}"
 IGV_JAVA_XMX="${IGV_JAVA_XMX:-4g}"
 
