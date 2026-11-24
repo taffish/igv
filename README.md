@@ -1,272 +1,314 @@
 # taf-igv
 
-TAFFISH wrapper for [Integrative Genomics Viewer](https://igv.org/doc/desktop/),
-the desktop genome browser for interactive inspection of alignments, variants,
-annotations, coverage tracks, and genome browser sessions.
-
-This app packages upstream IGV Desktop `2.19.8` from the official all-platform
-zip distribution. It provides:
-
-- `igv-gui`: a browser-accessible noVNC GUI session for normal TAFFISH use.
-- `igv`: a direct IGV Java launcher for environments that already have an X
-  display.
-- `igvtools`: upstream command-line utilities for sorting, indexing, counting,
-  and converting selected text/genomics formats.
-
-IGV is especially useful in TAFFISH because large BAM/CRAM/VCF/BigWig datasets
-often live on a server or cluster, while the visual review still needs an
-interactive browser-like interface.
-
-Release `2.19.8-r1` updates the packaged IGV Desktop distribution from
-`2.19.7` to `2.19.8`. Upstream `2.19.8` adds HGVS search support and includes
-search, chromosome aliasing, file-dialog, genome URL, and track configuration
-fixes. The TAFFISH GUI/noVNC helper, Java 21 runtime route, and IGVTools
-packaging design are unchanged.
+IGV Desktop 2.19.9-r1: the official Java genome browser and IGVTools, with a supervised
+browser-accessible noVNC desktop. The official IGV jar is unchanged.
 
 ## Installation
-
-Install from the public TAFFISH Hub index:
 
 ```sh
 taf update
 taf install igv
-```
-
-Install the exact release:
-
-```sh
-taf install igv 2.19.8-r1
-```
-
-For local testing before the app is published to the public index:
-
-```sh
+# Exact release, after publication:
+taf install igv 2.19.9-r1
+# Local candidate, from this app directory:
 taf install --from .
 ```
 
-## Usage
+`taf-igv --help` shows use-time help. `taf-igv -- --help` and
+`taf-igv -- --version` call IGV; `taf-igv igvtools help count` calls a sibling
+upstream executable. No separate installation of Java or a host desktop is required.
 
-Show TAFFISH app help:
+## Quick start: local, offline viewing
+
+Work in the directory containing your data. IGV needs a reference; no production
+reference is bundled. Supply an indexed FASTA, 2bit, or complete local genome JSON.
+Generate a FASTA index once if necessary:
 
 ```sh
-taf-igv --help
+taf-igv igvtools index reference.fa
+taf-igv igvtools sort input.bed sorted.bed
+taf-igv igvtools index sorted.bed
 ```
 
-Show the TAFFISH package version:
-
-```sh
-taf-igv --version
-```
-
-Start IGV GUI through Docker and noVNC:
+Start one backend:
 
 ```sh
 TAFFISH_CONTAINER_BACKEND=docker \
-TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" \
-taf-igv igv-gui
-```
+TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801 --network bridge" \
+taf-igv igv-gui --genome reference.fa -- sorted.bed
 
-Then open:
-
-```text
-http://127.0.0.1:5801/vnc.html?autoconnect=1&resize=scale
-```
-
-The helper prints this URL at startup, plus an SSH tunnel example for remote
-servers.
-
-Podman uses the same idea with the Podman run-args variable:
-
-```sh
 TAFFISH_CONTAINER_BACKEND=podman \
 TAFFISH_PODMAN_RUN_ARGS="-p 127.0.0.1:5801:5801" \
-taf-igv igv-gui
+taf-igv igv-gui --genome reference.fa -- sorted.bed
+
+# Apptainer uses the Linux host network; do not pass Docker -p.
+TAFFISH_CONTAINER_BACKEND=apptainer \
+taf-igv igv-gui --bind-address 127.0.0.1 --genome reference.fa -- sorted.bed
 ```
 
-Use another host port if `5801` is already occupied:
+Open http://127.0.0.1:5801/vnc.html?autoconnect=1&resize=scale after the
+`ready` message. For a remote server, run this on your workstation first:
 
 ```sh
-TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5802:5801" \
-taf-igv igv-gui --host-port 5802
+ssh -N -L 5801:127.0.0.1:5801 USER@HOST
 ```
 
-For a remote server:
+Ctrl-C stops the session (130); TERM stops it with 143. Closing the main window
+normally exits successfully only when the supporting components are still healthy.
+Startup prints the URL and diagnostic directory before waiting. Readiness requires
+the JVM, Xvfb, Openbox, x11vnc, HTTP bridge, an RFB handshake and the real main window.
+A support failure remains an error even when the main window exits at the same time.
+
+Use `--host-port 15801` with a Docker/Podman mapping
+`-p 127.0.0.1:15801:5801`. For Apptainer change the listener too:
+`--port 15801 --host-port 15801 --bind-address 127.0.0.1`.
+Concurrent sessions also need distinct `--display :N` and `--vnc-port N`.
+
+The default virtual desktop is 1440x900. noVNC scaling fits a smaller browser;
+the helper positions the main window inside the desktop. Use IGV's File menu
+to export snapshots/save sessions into the mounted working directory. Paths
+visible in IGV are container paths, not arbitrary host paths.
+
+## CLI, batch mode and other windows
 
 ```sh
-ssh -L 5801:127.0.0.1:5801 user@server
+taf-igv igvtools count sorted.bed coverage.tdf reference.chrom.sizes
+taf-igv igv-gui --genome reference.fa -- -b commands.txt
+taf-igv igv-gui --tools
+taf-igv igv-gui --java-xmx 8g --genome reference.fa
 ```
 
-Then open the same localhost URL in your local browser.
+The input to `count` includes an explicit local chromosome-sizes/genome file;
+symbolic aliases that would download are rejected on the offline path.
+Use the `.chrom.sizes` suffix for a tab-separated chromosome name/length file.
+In batch mode, upstream IGV ignores the command-line genome during initial
+loading: start `commands.txt` with `genome ./reference.fa`, before `load`, `goto`
+or `snapshot` commands. Otherwise it can try to load its default online genome.
+The upstream batch `genome` command does not strip quotes or support a path
+containing spaces. Use a space-free reference basename in the working directory
+(a local symlink is sufficient), even if that directory itself contains spaces.
+Keep the `./` prefix: a bare filename also triggers an upstream parent-path error.
+Other batch commands such as `load` and `snapshotDirectory` accept ordinary
+double-quoted paths. This is an upstream syntax limitation, not a change to IGV.
+IGV Desktop fills the virtual desktop; the separate IGVTools window keeps its
+upstream fixed-size, non-resizable dialog and remains wholly visible.
+The direct `igv`, `igvtools_gui` and `igvtools_gui_hidpi` commands require an
+existing X display. The headless `igvtools` command does not.
 
-## GUI Options
-
-The GUI helper creates an Xvfb display, starts Openbox and x11vnc, exposes it
-through noVNC, then launches IGV.
-
-Useful options:
+TAFFISH command mode joins shell text rather than preserving argv boundaries.
+Pass **literal quotes** through the wrapper for paths containing spaces:
 
 ```sh
-taf-igv igv-gui --help
-taf-igv igv-gui --geometry 1440x900
-taf-igv igv-gui --java-xmx 8g
-taf-igv igv-gui --password 'choose-a-password'
+taf-igv igvtools sort "'input data.bed'" "'sorted data.bed'"
+taf-igv igv-gui --genome "'reference data.fa'" -- "'sorted data.bed'"
 ```
 
-Pass extra IGV arguments after `--`:
+This also applies to `--log-dir`, `--state-dir`, and recipe/source paths.
+Do not use arbitrary shell metacharacters in filenames. Batch-file syntax is
+upstream IGV syntax, not TAFFISH shell syntax.
+
+## Runtime state and online sources
+
+Private HOME, XDG and temporary directories are created per session. Normal
+shutdown removes only that session's runtime data and owned display endpoints.
+No write to the image's /opt tree or another user's HOME is required.
+Use `--log-dir logs` to retain component logs, process IDs and geometry receipts;
+private VNC credentials are removed even when diagnostics are retained.
+Cleanup errors are reported and cause failure; suspect paths are retained for
+diagnosis rather than followed through replacement symlinks.
+
+Preferences and upstream-managed downloads are ephemeral unless you explicitly
+supply an existing writable state directory:
 
 ```sh
-taf-igv igv-gui --java-xmx 8g -- --genome hg38
-taf-igv igv-gui -- session.xml
-taf-igv igv-gui -- batch_script.txt
+mkdir -p state
+# Add the chosen backend's GUI port options from above.
+taf-igv igv-gui --state-dir state --allow-network -- --genome hg38
 ```
 
-The direct launcher is also available:
+`--allow-network` is an explicit opt-in to IGV's hosted catalogs, tracks and other
+online facilities. The state directory must be a persistent writable mount.
+Such upstream downloads are not a TAFFISH-verified shared library: they may lack
+fixed checksums and can be changed by IGV. Never point this writable state root at
+the read-only shared references below. For the direct launcher/IGVTools, the
+equivalent variables are `IGV_ALLOW_NETWORK=1` and `IGV_STATE_DIR`, explicitly
+passed into the container with the backend's environment options.
+
+Offline launch requires explicit local inputs; launcher configuration disables
+implicit genome catalog downloads and the IGV command listener. This is not a
+general-purpose network security sandbox: user sessions, plugins and Java options
+are not untrusted-code isolation. Use `--network none` for non-browser offline
+jobs. Supply state via the documented interface rather than `--igvDirectory`,
+custom `--preferences` or an exposed IGV command port.
+
+## Shared reference resources
+
+A hosted genome is independently reusable; its catalog is not itself the sequence.
+`igv-resources` accepts exact fixed recipes and never selects a reference for the
+user. `catalog` lists the bundled reviewed recipe(s). The initial sacCer3 recipe
+contains only GCF_000146045.2 sequence and chromosome sizes (3,558,746 download
+bytes), not annotations, optional hubs or the entire IGV catalog.
 
 ```sh
-taf-igv igv --version
-taf-igv -- --help
+taf-igv igv-resources catalog
+mkdir -p "$HOME/.local/share/taffish/resources/igv"
 ```
 
-The direct launcher requires an existing X display. For normal TAFFISH use,
-`taf-igv igv-gui` is the recommended entry point.
-
-## IGVTools
-
-The upstream `igvtools` command-line utilities are included in the same
-container. Use command mode to call them explicitly:
+Choose exactly one writable setup binding and backend (ordinary personal install):
 
 ```sh
-taf-igv igvtools
-taf-igv igvtools sort input.bed sorted.bed
-taf-igv igvtools index sorted.bed
-taf-igv igvtools count alignments.bam coverage.tdf hg38
+export TAFFISH_CONTAINER_BACKEND=docker
+export TAFFISH_DOCKER_RUN_ARGS="-v $HOME/.local/share/taffish/resources/igv:/resources:rw"
+
+# Or:
+export TAFFISH_CONTAINER_BACKEND=podman
+export TAFFISH_PODMAN_RUN_ARGS="-v $HOME/.local/share/taffish/resources/igv:/resources:rw"
+
+# Or, on Linux:
+export TAFFISH_CONTAINER_BACKEND=apptainer
+export TAFFISH_APPTAINER_RUN_ARGS="--bind $HOME/.local/share/taffish/resources/igv:/resources:rw"
+
+TAFFISH_IGV_RESOURCE_AUTO_MOUNT=0 taf-igv igv-resources install --genome sacCer3 --resource-root /resources --rights-reviewed --dry-run
+TAFFISH_IGV_RESOURCE_AUTO_MOUNT=0 taf-igv igv-resources install --genome sacCer3 --resource-root /resources --rights-reviewed --allow-network
+unset TAFFISH_DOCKER_RUN_ARGS TAFFISH_PODMAN_RUN_ARGS TAFFISH_APPTAINER_RUN_ARGS
 ```
 
-`igvtools` is useful for preprocessing text tracks, computing coverage, and
-creating indexes for formats supported by IGVTools. It is not a replacement for
-specialized tools such as `samtools` or `bcftools` for BAM/CRAM/VCF workflows.
-
-The packaged `igvtools` launcher calls the upstream IGVTools Java module
-directly. This keeps the command-line output cleaner than the stock shell
-script, which also loads GUI/JIDE module arguments that are not needed for
-headless IGVTools runs.
-
-## Package
-
-```text
-name: igv
-command: taf-igv
-version: 2.19.8-r1
-kind: tool
-image: ghcr.io/taffish/igv:2.19.8-r1
-upstream: IGV Desktop v2.19.8
-runtime version: IGV 2.19.8
-```
-
-## Container
-
-The container image is built from `docker/Dockerfile`. It starts from
-`debian:12-slim`, installs the GUI/noVNC runtime, downloads a fixed
-multi-architecture Eclipse Temurin Java 21 JRE tarball for the current build
-architecture, then downloads the official IGV `IGV_2.19.8.zip` distribution.
-Both downloads are verified with SHA-256 checksums.
-
-The IGV `2.19.8` distribution checksum used by this release is:
-
-```text
-7476fc44f15788f52dfe1d40e99748c7aedcb9dbf6a91f7634a81344e50d07a6
-```
-
-It provides:
-
-```text
-igv
-igv-gui
-igvtools
-igvtools_gui
-igvtools_gui_hidpi
-java
-Xvfb
-openbox
-x11vnc
-websockify/noVNC
-```
-
-The image is built and validated for:
-
-```text
-linux/amd64
-linux/arm64
-```
-
-The `<taf-app:...>` entry embeds `--init` for Docker and Podman so long-running
-GUI sessions receive signals and clean up child processes more reliably.
-
-## Security And Ports
-
-The documented examples bind the host port to `127.0.0.1`, not all network
-interfaces. This is the safest default for local work and SSH tunneling.
-
-By default the VNC session has no password because it is expected to be exposed
-only on localhost. On shared machines or exposed network paths, use:
+A dry-run reports exact ID/version, HTTPS sources, sizes, SHA256, license notice and
+free-space reserve without changing files or connecting. Installation needs either
+`--allow-network` or an offline `--source-dir` containing those exact named files.
+Use the same port setup as Quick start, then:
 
 ```sh
-taf-igv igv-gui --password 'choose-a-password'
+taf-igv igv-gui --resource sacCer3--GCF_000146045.2-sequence-20261122
 ```
 
-noVNC is served over plain HTTP inside the container. If a site needs TLS,
-authentication, or external network exposure, put those controls outside the
-container at the site level.
+Discovery order is `TAFFISH_IGV_RESOURCE_PATH`, then
+`~/.local/share/taffish/resources/igv`,
+`/usr/local/share/taffish/resources/igv`, and
+`/opt/taffish/resources/igv`. The selected root is mounted read-only at
+`/igv-resources`; every visible installed member is fully verified by the launcher
+and helper. A corrupt higher-priority root fails, not silently falls through.
+`TAFFISH_IGV_RESOURCE_AUTO_MOUNT=0` disables discovery. Valid root symlinks resolve
+to their physical target; dangling links fail. Auto-mount paths reject whitespace,
+commas, colons and glob characters. Use an explicit backend bind for those paths
+and `--genome /igv-resources/ID--VERSION/genome.json` or `--resource ID--VERSION`.
+For manual exposure, use `-v SOURCE:/igv-resources:ro` (Docker/Podman), or
+`--bind SOURCE:/igv-resources:ro` (Apptainer), with the run-args value quoted for
+the host shell. Explicit `--resource` verifies the complete library even without
+auto-discovery. Project-generated references may instead be mounted anywhere and
+selected explicitly; they are not falsely labelled as a global database.
 
-## Boundaries
+For site installation, the administrator creates and owns one 0755 root, for
+example `/usr/local/share/taffish/resources/igv`, then runs the same explicit setup
+with that host path as the writable binding. For Docker the installer can map its
+UID/GID with `--user UID:GID`; rootless Podman can use `--userns keep-id`.
+For Apptainer the installer is the invoking Linux user. No helper invokes sudo
+or changes directory ownership. Ordinary users only need traverse/read access;
+they run the read-only discovery or manual bind without network or administrator
+privileges. Published member directories/files are 0755/0644; private download
+cache/staging is 0700 and the persistent flock inode is 0600.
 
-This app packages IGV Desktop and the IGVTools utilities distributed with the
-same upstream zip. It does not package a JBrowse/HiGlass-style web genome
-browser service, cloud data credentials, reference genome downloads, or site
-specific track/session catalogs.
+Installation has one nonblocking lock per library, resumable bounded-retry HTTPS
+downloads, SHA/size checks, per-file free-space checks and same-filesystem
+no-replace atomic promotion. Allow roughly twice the download size plus a default
+1 GiB reserve (`--reserve-gb`). A complete same-recipe member is an idempotent
+skip. Bad cache, conflicting identity, unexpected files, hardlinks or unsafe
+permissions fail closed. Zero-byte partials can resume. INT/TERM retain old
+members and reusable private partials; only files owned by the interrupted
+transaction are eligible for cleanup. SIGKILL may leave a private staging
+directory; it is never treated as installed or automatically deleted. The lock
+file is deliberately retained so waiters cannot acquire different lock inodes.
+There is no destructive `--force`: inspect/quarantine a specific broken member
+while no installer runs, then repeat installation. Use a new version for changed
+source bytes.
 
-IGV can open local files, mounted paths, URLs, and sessions according to
-upstream IGV support. Remote cloud/object-store access may require user
-credentials or site configuration outside the container.
+Custom recipes can be pinned with `igv-resources pin --spec spec.json
+--source-dir files --license-file rights.txt --rights-reviewed` (redirect JSON
+output to a new file). The spec uses the bundled recipe's schema, ID, version,
+source, genome definition and named HTTPS files; pin computes size/SHA from
+reviewed local acquisition. Local genome URLs must name exactly the recipe files;
+FASTA requires a prepared index. First-acquisition SHA is not an upstream-signed
+authenticity guarantee. Review source and acquisition/site-sharing rights
+separately; program MIT licensing does not license all genome/annotation data.
 
-On startup, upstream IGV may try to load a default remote genome definition and
-annotation tracks. In offline clusters, start with a local genome/session file
-or load local tracks after the GUI opens.
+## Security, scope and provenance
 
-Apptainer support for GUI/noVNC sessions is site-dependent. The image contains
-the needed programs, but port exposure and network policy vary across clusters.
+The HTTP UI has **no TLS** and no authentication by default. Always bind the host
+port to loopback and use SSH for remote access. `--password-file` provides legacy
+VNC authentication (1–8 bytes), not encryption; the old `--password` option exposes
+a secret in argv and is discouraged. Never expose VNC or the IGV command socket.
+Multiuser public deployments require site-managed authentication/TLS outside this app.
 
-## Smoke
+IGV-Web, igv.js, igv-notebook and igv-reports are independently versioned companions,
+not dependencies invoked by IGV Desktop. They are not bundled. Normal IGV snapshots
+and sessions are native outputs; this app does not invent a new scientific report.
 
-The TAFFISH metadata declares Docker smoke checks that verify:
+The official v2.19.9 tag is `c102eb6f8404e55fbd4780ffd3c525ffc4cd6c49`.
+The official all-platform zip SHA256 is
+`733131d4537c7158b23c976cb57f2490afd609fc38153f4861bef88a36edf105`.
+Compared with 2.19.8, upstream changes concern autoscaling/categories and complete
+reading of remote concatenated gzip members. No upstream Java code is patched.
 
-```text
-exist: igv, igv-gui, igvtools, Java 21, Xvfb, x11vnc, websockify, openbox
-test:  IGV launcher reports version 2.19.8
-test:  Java 21 is available
-test:  launcher and GUI helper help are available
-test:  direct launcher gives a clear message when no X display exists
-test:  igvtools version, main help, and sort help are available
-test:  igvtools can sort a tiny BED file
-test:  igv-gui starts Xvfb, x11vnc, noVNC, and the IGV process
-test:  noVNC vnc.html is reachable inside the container
-test:  the user-facing localhost URL is printed
+Debian Bookworm base is manifest-pinned; APT security packages remain a moving
+source, with drift/retention comments beside the relevant Dockerfile instructions.
+Temurin 21.0.13.1+2 and noVNC 1.7.0 archives are byte-pinned for each architecture.
+The Java build is listed in Adoptium's November 2026 Java4Shell fix guidance.
+No GUI, timing-sensitive integration test or CPU-specific output assertion runs
+during Dockerfile construction. Full runtime checks run separately.
+
+IGV metadata catalog snapshot:
+`igvteam/igv-data@28a3b40cdb8313e90e84617e5336f3f947221c0d`.
+The reviewed recipe is a deliberate sequence-only local configuration based on
+that source; optional annotation/hub URLs remain outside its claimed scope.
+The full MIT metadata notice and UCSC resource-use references are stored in the
+recipe and installed RESOURCE_LICENSE.txt. The image's IGV/JRE/noVNC distribution
+licenses remain with their upstream files. Packaging license: Apache-2.0; IGV: MIT.
+
+## Development checkout
+
+Short commands such as `taf run -- --version` and `taf run igvtools help` work
+from this app directory. With TAFFISH 0.12.0, the long-running `taf run igv-gui`
+path did not stream the startup information in the checkout audit and reported
+exit 1 when interrupted. It is not the supported GUI launch path. Build once,
+then invoke the generated wrapper, with the backend-specific options above:
+
+```sh
+taf build
+TAFFISH_CONTAINER_BACKEND=docker \
+TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" \
+./target/taf-igv-v2.19.9-r1 igv-gui --genome reference.fa -- sorted.bed
 ```
 
-These checks validate the packaged IGV distribution, Java runtime, IGVTools,
-GUI helper, and browser access path. They do not replace manual visual
-inspection with representative BAM/CRAM/VCF/track/session datasets.
+The installed `taf-igv` and generated wrapper expose the same app commands.
+Do not commit generated `target` artifacts; release-source cleanup keeps only
+`target/.gitkeep`. This development limitation does not change IGV or its algorithms.
 
-## Upstream
+## Verification and limits
 
-```text
-project: Integrative Genomics Viewer
-homepage: https://igv.org/doc/desktop/
-source:   https://github.com/igvteam/igv
-release:  https://github.com/igvteam/igv/tree/v2.19.8
-download: https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.8.zip
-license:  MIT
-citation: Thorvaldsdottir, Robinson, and Mesirov. 2013. Integrative Genomics Viewer (IGV): high-performance genomics data visualization and exploration
-doi:      10.1093/bib/bbs017
-pmid:     22517427
-```
+Declared platforms: linux/amd64 and linux/arm64. Native builds and real generated
+wrapper tests passed on ARM64 Docker/Podman and xjp amd64 Docker/Podman/Apptainer.
+The exact offline matrix also passed read-only, non-root execution. Tests cover
+IGVTools sort/index/count, local-reference GUI input and PNG export, actual
+INT/TERM shutdown, support failures, closed output, resource installation,
+corrupt-library rejection, interrupted recovery, idempotence and read-only sharing.
+The browser was exercised through SSH with real menu/popup input, PNG export,
+zoom and narrow-window scaling. An independent UID 1002 could read the shared
+reference without write permission. The reviewed small reference also passed an
+explicit HTTPS install and subsequent network-disabled verification.
+
+Measured final uncompressed image sizes: 775,432,315 bytes (ARM64) and
+776,840,949 bytes (amd64). Main image content is the system/X desktop, Java and
+the unchanged IGV distribution; no large reference database is baked in.
+Validation covers synthetic local data and explicitly identified reference
+mechanisms, not production-data scientific acceptance or all hosted genomes.
+No publication is implied by these local checks. See release.md and the maintainer's
+evidence receipt for the final tested image, wrapper and backend identities.
+
+## References
+
+- Manual: https://igv.org/doc/desktop/
+- Source: https://github.com/igvteam/igv/tree/v2.19.9
+- Genome metadata: https://github.com/igvteam/igv-data
+- Resource terms: https://hgdownload.soe.ucsc.edu/downloads.html
+- Java fix: https://adoptium.net/es/news/2026/11/temurin-november-2026-cspu-java4shell
+- Citation: Thorvaldsdottir, Robinson and Mesirov (2013), DOI 10.1093/bib/bbs017, PMID 22517427.

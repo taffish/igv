@@ -1,0 +1,49 @@
+[package]
+name = "igv"
+kind = "tool"
+version = "2.19.9"
+release = 1
+license = "Apache-2.0"
+main = "src/main.taf"
+
+[repository]
+url = "https://github.com/taffish/igv"
+
+[command]
+name = "taf-igv"
+
+[runtime]
+pipe = true
+command_mode = true
+
+[container]
+image = "ghcr.io/taffish/igv:2.19.9-r1"
+dockerfile = "docker/Dockerfile"
+build_platforms = "linux/amd64,linux/arm64"
+
+[upstream]
+name = "Integrative Genomics Viewer"
+type = "github"
+repo = "igvteam/igv"
+homepage = "https://igv.org/doc/desktop/"
+release_url = "https://github.com/igvteam/igv/tree/v2.19.9"
+downloads = "https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.9.zip"
+version = "2.19.9"
+license = "MIT"
+citation = "Thorvaldsdottir, Robinson, and Mesirov. 2013. Integrative Genomics Viewer (IGV): high-performance genomics data visualization and exploration."
+doi = "10.1093/bib/bbs017"
+pmid = "22517427"
+watch = "tags"
+strip_prefix = "v"
+
+[smoke]
+backend = "docker"
+timeout = 240
+exist = ["igv", "igv-gui", "igvtools", "igvtools_gui", "igvtools_gui_hidpi", "igv-resources", "java", "python3", "Xvfb", "x11vnc", "websockify", "openbox", "xdotool", "curl", "sh"]
+test = ["python3 /opt/igv/libexec/igv-check.py identity", "python3 /opt/igv/libexec/igv-check.py tools", "python3 /opt/igv/libexec/igv-check.py resource", "python3 /opt/igv/libexec/igv-check.py gui", "python3 /opt/igv/libexec/igv-check.py tools-gui"]
+
+[meta]
+domain = "bio"
+categories = ["genomics", "genome-browser", "variant-review", "visualization", "viewer"]
+keywords = ["igv", "integrative-genomics-viewer", "genome-browser", "bam", "cram", "vcf", "bed", "gff", "bigwig", "novnc", "vnc"]
+description = "IGV Desktop 2.19.9 for interactive genome browsing and variant review through a browser-accessible noVNC session, with IGVTools utilities included."

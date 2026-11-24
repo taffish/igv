@@ -1,0 +1,28 @@
+{
+  "schema": "taffish.igv.recipe.v1",
+  "id": "sacCer3",
+  "version": "GCF_000146045.2-sequence-20261122",
+  "source": "https://raw.githubusercontent.com/igvteam/igv-data/28a3b40cdb8313e90e84617e5336f3f947221c0d/genomes/json/sacCer3.json",
+  "license": "MIT License\n\nCopyright (c) 2025 igvteam\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n\nSequence: GCF_000146045.2_R64, SGD/NCBI via UCSC GenArk.\nUCSC data are freely usable for any purpose except directory README exceptions; acknowledge data contributors.\nhttps://hgdownload.soe.ucsc.edu/downloads.html\nhttps://hgdownload.soe.ucsc.edu/goldenPath/sacCer3/bigZips/README.txt\nThis recipe is sequence-only; it does not include annotations, hubs or a complete hosted-genome catalog.",
+  "genome": {
+    "id": "sacCer3",
+    "name": "S. cerevisiae GCF_000146045.2 (sequence only)",
+    "twoBitURL": "sacCer3.2bit",
+    "chromSizesURL": "sacCer3.chrom.sizes.txt",
+    "wholeGenomeView": true
+  },
+  "files": [
+    {
+      "name": "sacCer3.2bit",
+      "url": "https://hgdownload.soe.ucsc.edu/hubs/GCF/000/146/045/GCF_000146045.2/GCF_000146045.2.2bit",
+      "sha256": "8cfe11cb68af93779adb8ee75776e7fac28a905042bc87caeae7932e30671e18",
+      "size": 3558419
+    },
+    {
+      "name": "sacCer3.chrom.sizes.txt",
+      "url": "https://hgdownload.soe.ucsc.edu/hubs/GCF/000/146/045/GCF_000146045.2/GCF_000146045.2.chrom.sizes.txt",
+      "sha256": "d3048ecafaf30d21d459da8647ef67001cac32f1806dbc74d9dca3e8afceaa19",
+      "size": 327
+    }
+  ]
+}

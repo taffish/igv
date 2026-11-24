@@ -1,107 +1,70 @@
-taf-igv 2.19.8-r1
-
-TAFFISH wrapper for IGV Desktop, an interactive genome browser for alignments,
-variants, annotations, coverage tracks, and genome browser sessions.
-
-GUI mode:
-  TAFFISH_CONTAINER_BACKEND=docker \
-  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" \
-  taf-igv igv-gui
-
-Then open:
-  http://127.0.0.1:5801/vnc.html?autoconnect=1&resize=scale
+taf-igv 2.19.9-r1 — IGV Desktop, IGVTools and browser viewing.
 
 Usage:
-  taf-igv [TAF-APP-OPTION]
-  taf-igv igv-gui [GUI-OPTIONS] [-- IGV-ARGS...]
-  taf-igv igv [IGV-ARGS...]
-  taf-igv igvtools [COMMAND] [OPTIONS...]
-  taf-igv -- [IGV-ARGS...]
-
-TAF app options:
-  -h, --help       Show this help text
-  -v, --version    Show package and command version
-  --compile        Print generated shell code instead of running it
-  --               Stop parsing TAFFISH wrapper options
-
-Recommended forms:
-  taf-igv igv-gui --help
-  taf-igv igv --version
-  taf-igv igvtools
+  taf-igv --help
   taf-igv -- --help
+  taf-igv -- --version
+  taf-igv igvtools <command> [arguments]
+  taf-igv igv-gui --genome reference.fa [options] -- [IGV arguments]
 
-Docker and Podman port mapping:
-  TAFFISH_CONTAINER_BACKEND=docker \
-  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" \
-  taf-igv igv-gui
+Local data:
+  Prepare reference.fa and reference.fa.fai; references are not bundled.
+  Missing local resources fail; normal use does not implicitly download.
+  Prepare an index: taf-igv igvtools index reference.fa
+  Sort/index a track:
+    taf-igv igvtools sort input.bed sorted.bed
+    taf-igv igvtools index sorted.bed
+  Output: sorted.bed and sorted.bed.idx in the current directory.
+  Show command help: taf-igv igvtools help count
 
-  TAFFISH_CONTAINER_BACKEND=podman \
-  TAFFISH_PODMAN_RUN_ARGS="-p 127.0.0.1:5801:5801" \
-  taf-igv igv-gui
+Browser session (run in the directory containing the reference and tracks):
+  Docker:
+    TAFFISH_CONTAINER_BACKEND=docker TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" taf-igv igv-gui --genome reference.fa
+  Podman:
+    TAFFISH_CONTAINER_BACKEND=podman TAFFISH_PODMAN_RUN_ARGS="-p 127.0.0.1:5801:5801" taf-igv igv-gui --genome reference.fa
+  Apptainer (Linux; shares host network, no -p):
+    TAFFISH_CONTAINER_BACKEND=apptainer taf-igv igv-gui --bind-address 127.0.0.1 --genome reference.fa
+  Open http://127.0.0.1:5801/vnc.html?autoconnect=1&resize=scale after "ready".
+  Remote server: ssh -N -L 5801:127.0.0.1:5801 USER@HOST
+  Ctrl-C or closing the IGV main window stops this session.
+  No TLS; no password by default. Keep HTTP on host loopback; use SSH remotely.
+  VNC is loopback-only. Do not expose it or IGV command ports.
+  --password-file secret.txt enables VNC authentication, not encryption.
+  Export snapshots/save sessions into the mounted working directory.
+  --log-dir logs retains diagnostics; --state-dir state keeps writable preferences.
+  Default geometry: 1440x900; use noVNC scaling in smaller browser windows.
+  --host-port changes the printed mapped port; --port changes the listener.
+  IGVTools window: replace --genome reference.fa with --tools.
+  More options: taf-igv igv-gui --help
 
-Alternate host port:
-  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5802:5801" \
-  taf-igv igv-gui --host-port 5802
+Shared references (explicit setup only; choose a reviewed member):
+  taf-igv igv-resources catalog
+  mkdir -p "$HOME/.local/share/taffish/resources/igv"
+  Use the backend run-args variable below for a writable /resources mount:
+    Docker: TAFFISH_DOCKER_RUN_ARGS="-v $HOME/.local/share/taffish/resources/igv:/resources:rw"
+    Podman: TAFFISH_PODMAN_RUN_ARGS="-v $HOME/.local/share/taffish/resources/igv:/resources:rw"
+    Apptainer: TAFFISH_APPTAINER_RUN_ARGS="--bind $HOME/.local/share/taffish/resources/igv:/resources:rw"
+  With that variable exported and the matching backend selected:
+    TAFFISH_IGV_RESOURCE_AUTO_MOUNT=0 taf-igv igv-resources install --genome sacCer3 --resource-root /resources --rights-reviewed --dry-run
+    TAFFISH_IGV_RESOURCE_AUTO_MOUNT=0 taf-igv igv-resources install --genome sacCer3 --resource-root /resources --rights-reviewed --allow-network
+  Unset the temporary writable run-args afterward.
+  Launch with the backend's GUI port options and:
+    taf-igv igv-gui --resource sacCer3--GCF_000146045.2-sequence-20261122
+  Auto-discovery: personal resources/igv, /usr/local/share/taffish/resources/igv,
+  then /opt/taffish/resources/igv. Mount is read-only; choose a member explicitly.
+  Override: TAFFISH_IGV_RESOURCE_PATH=/absolute/prepared/root
+  Disable: TAFFISH_IGV_RESOURCE_AUTO_MOUNT=0
+  Auto paths cannot contain whitespace, commas, colons or glob characters.
+  Manual read-only bind: SOURCE:/igv-resources:ro using -v (Docker/Podman)
+  or --bind (Apptainer); see README for paths with spaces and site installation.
+  Custom local genomes remain supported through --genome.
+  Online upstream sources require --allow-network --state-dir state (create state
+  first); these downloads are not a verified shared library.
 
-Remote server over SSH:
-  On the server, run IGV with a localhost port mapping.
-  From your laptop, tunnel the port:
-    ssh -L 5801:127.0.0.1:5801 user@server
-  Then open the same 127.0.0.1 URL in your local browser.
+Paths with spaces:
+  TAFFISH joins command text. Preserve literal quotes across the wrapper:
+    taf-igv igvtools sort "'input data.bed'" "'sorted data.bed'"
+  Apply the same quoting to GUI paths. Avoid shell metacharacters in filenames.
 
-Common GUI options:
-  --port PORT        noVNC HTTP listen port inside the container
-  --host-port PORT   host port shown in the printed URL
-  --geometry WxH     virtual screen size, for example 1440x900
-  --java-xmx SIZE    Java maximum heap size, for example 8g
-  --password PASS    require a VNC password
-  --no-password      run without a VNC password, the default
-
-Passing IGV arguments:
-  taf-igv igv-gui -- --genome hg38
-  taf-igv igv-gui -- session.xml
-  taf-igv igv-gui -- batch_script.txt
-
-IGVTools:
-  taf-igv igvtools
-  taf-igv igvtools sort input.bed sorted.bed
-  taf-igv igvtools index sorted.bed
-  taf-igv igvtools count alignments.bam coverage.tdf hg38
-
-Direct launcher:
-  taf-igv igv --version
-
-The direct launcher requires an X display. For normal TAFFISH use, prefer the
-igv-gui helper because it creates Xvfb, x11vnc, and noVNC for you.
-
-Notes:
-  - This app packages upstream IGV Desktop v2.19.8.
-  - Upstream 2.19.8 adds HGVS search support and related search, aliasing,
-    file-dialog, genome URL, and track-configuration fixes.
-  - Java 21 is included through a fixed Eclipse Temurin JRE tarball.
-  - IGVTools is included because it is part of the official IGV distribution.
-  - The igvtools launcher calls the upstream Java module directly to avoid
-    noisy GUI module warnings from the stock shell script.
-  - The helper prints the exact browser URL at startup.
-  - IGV may try to load a default remote genome on startup. Offline sites can
-    start with a local genome/session file or load local tracks after opening.
-  - The example binds the host port to 127.0.0.1. On shared machines, keep this
-    local binding unless you have explicit access control.
-  - Apptainer GUI/noVNC use is site-dependent because port, network, and X/VNC
-    behavior vary across clusters.
-
-Container:
-  image: ghcr.io/taffish/igv:2.19.8-r1
-  supported backends: apptainer, podman, docker
-  supported native platforms: linux/amd64, linux/arm64
-
-Upstream:
-  project: Integrative Genomics Viewer
-  homepage: https://igv.org/doc/desktop/
-  source:   https://github.com/igvteam/igv
-  release:  https://github.com/igvteam/igv/tree/v2.19.8
-  download: https://data.broadinstitute.org/igv/projects/downloads/2.19/IGV_2.19.8.zip
-  license: MIT
-  citation: Thorvaldsdottir, Robinson, and Mesirov. 2013
-  doi: 10.1093/bib/bbs017
-  pmid: 22517427
+Details: https://github.com/taffish/igv
+Upstream: https://igv.org/doc/desktop/

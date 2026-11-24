@@ -1,0 +1,6 @@
+{
+  "artifact": "taf-igv-v2.19.9-r1",
+  "schema": "taffish.build/v1",
+  "source_sha256": "565c1b4b658c576d8ab6b6a1125323751446d491f320ed426d50f0206968cc59",
+  "wrapper_sha256": "5705921092f9350a1f60d0bce81576edfdc0a1cf1c8cd6d81871f3b4d8128c38"
+}

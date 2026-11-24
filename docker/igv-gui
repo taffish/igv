@@ -1,203 +1,838 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/python3 -I
+"""Run the official IGV desktop in a supervised, private noVNC session."""
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import resource
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import uuid
+sys.path.insert(0, '/opt/igv/libexec')
 
-usage() {
-    cat <<'EOF'
-igv-gui - start IGV in a browser-accessible noVNC session
 
-Usage:
-  igv-gui [options] [-- igv-args...]
+def directory_identity(info):
+    return info.st_dev, info.st_ino
 
-Options:
-  --port PORT        noVNC HTTP listen port inside the container (default: 5801)
-  --vnc-port PORT    VNC listen port inside the container (default: 5901)
-  --display DISPLAY  X display to create (default: :1)
-  --geometry WxH     virtual screen size (default: 1280x800)
-  --url-host HOST    host shown in the printed browser URL (default: 127.0.0.1)
-  --host-port PORT   host port shown in the printed browser URL (default: --port)
-  --java-xmx SIZE    Java maximum heap size for IGV (default: 4g)
-  --password PASS    require a VNC password
-  --no-password      do not require a VNC password (default)
-  -h, --help         show this help
 
-Example:
-  TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:5801:5801" taf-igv igv-gui
-EOF
-}
+def directory_fingerprint(info):
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid,
+            stat.S_IMODE(info.st_mode), info.st_ctime_ns)
 
-port=5801
-vnc_port=5901
-display=:1
-geometry=1280x800
-url_host=127.0.0.1
-host_port=
-password=
-java_xmx=
 
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --port)
-            port="${2:?missing value for --port}"
-            shift 2
-            ;;
-        --vnc-port)
-            vnc_port="${2:?missing value for --vnc-port}"
-            shift 2
-            ;;
-        --display)
-            display="${2:?missing value for --display}"
-            shift 2
-            ;;
-        --geometry)
-            geometry="${2:?missing value for --geometry}"
-            shift 2
-            ;;
-        --url-host)
-            url_host="${2:?missing value for --url-host}"
-            shift 2
-            ;;
-        --host-port)
-            host_port="${2:?missing value for --host-port}"
-            shift 2
-            ;;
-        --java-xmx)
-            java_xmx="${2:?missing value for --java-xmx}"
-            shift 2
-            ;;
-        --password)
-            password="${2:?missing value for --password}"
-            shift 2
-            ;;
-        --no-password)
-            password=
-            shift
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        --)
-            shift
-            break
-            ;;
-        *)
-            break
-            ;;
-    esac
-done
+def open_directory(path):
+    """Open an absolute directory chain without following any symlink."""
+    path = Path(path)
+    if not path.is_absolute():
+        raise RuntimeError('directory must be absolute')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in path.parts[1:]:
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                              dir_fd=fd)
+            previous_fd = fd
+            fd = next_fd
+            os.close(previous_fd)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
-case "$geometry" in
-    *x*) ;;
-    *)
-        echo "igv-gui: --geometry must look like 1280x800" >&2
-        exit 2
-        ;;
-esac
 
-if [ -z "$host_port" ]; then
-    host_port="$port"
-fi
+class DiscardOutput:
+    """Avoid failed stream finalization overriding the intended exit status."""
+    def write(self, text):
+        return len(text)
 
-if [ -n "$java_xmx" ]; then
-    export IGV_JAVA_XMX="$java_xmx"
-fi
+    def flush(self):
+        pass
 
-export DISPLAY="$display"
-export HOME="${HOME:-/root}"
-export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
-export _JAVA_AWT_WM_NONREPARENTING="${_JAVA_AWT_WM_NONREPARENTING:-1}"
 
-mkdir -p "$HOME/.vnc" "$HOME/.igv" /tmp/.X11-unix
+def emit(message):
+    output = sys.stderr if isinstance(sys.stdout, DiscardOutput) else sys.stdout
+    try:
+        print('igv-gui: ' + message, file=output, flush=True)
+    except (OSError, ValueError):
+        # Unavailable output (closed pipe, full disk or I/O failure) must never
+        # interrupt child cleanup or replace the session's signal exit status.
+        sys.stdout = DiscardOutput()
+        if output is sys.stderr:
+            sys.stderr = DiscardOutput()
+            return
+        try:
+            print('igv-gui: ' + message, file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            sys.stderr = DiscardOutput()
 
-xvfb_pid=
-openbox_pid=
-x11vnc_pid=
-igv_pid=
-novnc_pid=
-auth_file=
 
-cleanup() {
-    trap - INT TERM EXIT
-    [ -n "${novnc_pid:-}" ] && kill "$novnc_pid" 2>/dev/null || true
-    [ -n "${igv_pid:-}" ] && kill "$igv_pid" 2>/dev/null || true
-    [ -n "${x11vnc_pid:-}" ] && kill "$x11vnc_pid" 2>/dev/null || true
-    [ -n "${openbox_pid:-}" ] && kill "$openbox_pid" 2>/dev/null || true
-    [ -n "${xvfb_pid:-}" ] && kill "$xvfb_pid" 2>/dev/null || true
-    [ -n "${novnc_pid:-}" ] && wait "$novnc_pid" 2>/dev/null || true
-    [ -n "${igv_pid:-}" ] && wait "$igv_pid" 2>/dev/null || true
-    [ -n "${x11vnc_pid:-}" ] && wait "$x11vnc_pid" 2>/dev/null || true
-    [ -n "${openbox_pid:-}" ] && wait "$openbox_pid" 2>/dev/null || true
-    [ -n "${xvfb_pid:-}" ] && wait "$xvfb_pid" 2>/dev/null || true
-    [ -n "${auth_file:-}" ] && rm -f "$auth_file" 2>/dev/null || true
-}
+def arguments():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--outdir', type=Path, default=Path.cwd(), help='working/output directory (default: current directory)')
+    p.add_argument('--log-dir', type=Path, help='retain component logs in a unique private session directory')
+    p.add_argument('--state-dir', type=Path, help='explicit writable persistent IGV preferences/download directory')
+    p.add_argument('--allow-network', action='store_true', help='enable upstream online sources; requires --state-dir')
+    p.add_argument('--genome', type=Path, help='local indexed FASTA, 2bit or offline genome JSON')
+    p.add_argument('--resource', help='exact shared member ID (id--version); no automatic scientific selection')
+    p.add_argument('--tools', action='store_true', help='open the upstream IGVTools GUI instead of Desktop')
+    p.add_argument('--port', type=int, default=5801)
+    p.add_argument('--host-port', type=int, help='mapped HTTP port used in printed URL')
+    p.add_argument('--vnc-port', type=int, default=5901)
+    p.add_argument('--display', default=':1')
+    p.add_argument('--geometry', default='1440x900')
+    p.add_argument('--bind-address', choices=['0.0.0.0', '127.0.0.1'], default='0.0.0.0')
+    p.add_argument('--url-host', default='127.0.0.1')
+    p.add_argument('--startup-timeout', type=float, default=120)
+    p.add_argument('--java-xmx', default=os.environ.get('IGV_JAVA_XMX', '4g'))
+    secrets = p.add_mutually_exclusive_group()
+    secrets.add_argument('--password-file', type=Path, help='read a VNC password from a local file; VNC is not TLS')
+    secrets.add_argument('--password', help='legacy option; prefer --password-file to avoid argv disclosure')
+    secrets.add_argument('--no-password', action='store_true', help='default; use host loopback/SSH only')
+    p.add_argument('igv_args', nargs=argparse.REMAINDER, help='upstream arguments after --')
+    a = p.parse_args()
+    if a.igv_args[:1] == ['--']:
+        a.igv_args = a.igv_args[1:]
+    if not re.fullmatch(r':[0-9]{1,4}', a.display):
+        p.error('display must have the form :N')
+    match = re.fullmatch(r'([0-9]+)x([0-9]+)', a.geometry)
+    if not match:
+        p.error('geometry must have the form WIDTHxHEIGHT')
+    a.width, a.height = map(int, match.groups())
+    if not 1200 <= a.width <= 3840 or not 768 <= a.height <= 2160:
+        p.error('desktop bounds: width 1200..3840, height 768..2160')
+    if any(not 1024 <= port <= 65535 for port in (a.port, a.vnc_port, a.host_port or a.port)) or a.port == a.vnc_port:
+        p.error('use distinct unprivileged HTTP/VNC ports')
+    if not 1 <= a.startup_timeout <= 300 or not re.fullmatch(r'[1-9][0-9]*[mMgG]', a.java_xmx):
+        p.error('startup timeout must be 1..300; Java heap must be a positive m/g value')
+    if not re.fullmatch(r'[A-Za-z0-9._-]+', a.url_host):
+        p.error('url-host must be a hostname or IPv4 address')
+    if a.allow_network and not a.state_dir:
+        p.error('--allow-network requires a persistent writable --state-dir')
+    if a.genome and a.resource:
+        p.error('choose --genome or --resource, not both')
+    if not a.tools and not a.allow_network and not (a.genome or a.resource or a.igv_args):
+        p.error('reference required: --genome local.fa or --resource id--version; network is disabled by default')
+    a.outdir = a.outdir.resolve()
+    if a.genome:
+        try:
+            a.genome = a.genome.resolve(strict=True)
+            if not a.genome.is_file() or not a.genome.stat().st_size:
+                raise ValueError()
+        except (OSError, ValueError):
+            p.error('genome must be a nonempty readable local file')
+    if a.state_dir:
+        a.state_dir = a.state_dir.resolve()
+        if not a.state_dir.is_dir() or not os.access(a.state_dir, os.W_OK):
+            p.error('--state-dir must be an existing writable directory')
+    if a.password_file:
+        a.password = a.password_file.read_text().rstrip('\r\n')
+    if a.password is not None and (not 1 <= len(a.password.encode()) <= 8 or '\n' in a.password):
+        p.error('VNC password must contain 1..8 bytes without a newline')
+    return a
 
-on_int() {
-    cleanup
-    exit 130
-}
 
-on_term() {
-    cleanup
-    exit 143
-}
+class Session:
+    def __init__(self, args):
+        self.a = args
+        self.stopping = 0
+        self.children = {}
+        self.generations = {}
+        self.logs = []
+        self.endpoints = {}
+        self.root = None
+        self.root_fd = None
+        self.parent_fd = None
+        self.directories = {}
+        self.directory_identities = {}
+        self.removed_directories = set()
+        self.retained_log = None
+        self.retained_log_identity = None
+        self.handle_close_failed = False
+        self.reopen_fingerprints = None
+        self.root_removed = False
+        self.cleaned = False
+        self.prepared = False
+        self.auth_identity = None
+        self.env = os.environ.copy()
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, self.on_signal)
 
-trap on_int INT
-trap on_term TERM
-trap cleanup EXIT
+    def prepare(self):
+        args = self.a
+        if args.log_dir:
+            args.log_dir = args.log_dir.resolve()
+            args.log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        parent = args.log_dir or Path(tempfile.gettempdir()).resolve()
+        self.parent_fd = open_directory(parent)
+        self.parent_identity = directory_identity(os.fstat(self.parent_fd))
+        self.root = Path(tempfile.mkdtemp(prefix='igv-gui-', dir=parent))
+        created = self.root.lstat()
+        self.root_identity = directory_identity(created)
+        self.root_fd = os.open(self.root.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                               dir_fd=self.parent_fd)
+        if not stat.S_ISDIR(created.st_mode) or directory_identity(os.fstat(self.root_fd)) != self.root_identity:
+            raise RuntimeError('session identity changed during creation')
+        os.fchmod(self.root_fd, 0o700)
+        self.token = uuid.uuid4().hex
+        for key, name in [('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'),
+                          ('XDG_RUNTIME_DIR', 'runtime'), ('TMPDIR', 'tmp')]:
+            path = self.root / name
+            self.make_directory(name)
+            self.env[key] = str(path)
+        self.env.update(DISPLAY=args.display, TMP=self.env['TMPDIR'], TEMP=self.env['TMPDIR'],
+                        PYTHONDONTWRITEBYTECODE='1')
+        self.env.update(TAFFISH_IGV_SESSION='1', IGV_JAVA_XMX=args.java_xmx,
+                        IGV_ALLOW_NETWORK='1' if args.allow_network else '0',
+                        IGV_STATE_DIR=str(args.state_dir or self.root / 'home' / 'igv'))
+        self.env.pop('DBUS_SESSION_BUS_ADDRESS', None)
+        self.prepared = True
 
-gui_url="http://${url_host}:${host_port}/vnc.html?autoconnect=1&resize=scale"
+    def make_directory(self, name):
+        os.mkdir(name, mode=0o700, dir_fd=self.root_fd)
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     dir_fd=self.root_fd)
+        try:
+            identity = directory_identity(os.fstat(fd))
+        except BaseException:
+            os.close(fd)
+            raise
+        self.directories[name] = (fd, identity)
+        self.directory_identities[name] = identity
 
-cat <<EOF
+    def close_handles(self):
+        errors = []
+        if (self.prepared and not self.cleaned and not self.root_removed
+                and self.root_fd is not None and self.parent_fd is not None):
+            # Record generations while the original objects are still pinned.
+            # Reopening by dev/inode alone after close could accept inode reuse.
+            def generation(fd, expected):
+                info = os.fstat(fd)
+                if not stat.S_ISDIR(info.st_mode) or directory_identity(info) != expected:
+                    raise RuntimeError('owned directory descriptor identity changed')
+                return directory_fingerprint(info)
+            try:
+                self.reopen_fingerprints = {
+                    # Sibling sessions may change a shared parent's timestamps.
+                    'parent': generation(self.parent_fd, self.parent_identity)[:-1],
+                    'root': generation(self.root_fd, self.root_identity),
+                    'directories': {name: generation(fd, expected) for name, (fd, expected) in self.directories.items()
+                                    if name not in self.removed_directories},
+                    'log': generation(*self.retained_log) if self.retained_log is not None else None,
+                }
+            except (OSError, RuntimeError) as error:
+                self.reopen_fingerprints = None
+                errors.append(f'record directory recovery identity: {error}')
+        descriptors = [row[0] for row in self.directories.values()] + [self.root_fd, self.parent_fd]
+        if self.retained_log is not None:
+            descriptors.append(self.retained_log[0])
+        self.directories = {}
+        self.root_fd = self.parent_fd = None
+        self.retained_log = None
+        for fd in descriptors:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError as error:
+                    errors.append(f'close session directory descriptor: {error}')
+        if errors:
+            self.handle_close_failed = True
+            raise RuntimeError('; '.join(errors))
 
-IGV GUI is starting.
+    def reopen_handles(self):
+        """Recover only this prepared session's original directory identities."""
+        if self.handle_close_failed:
+            raise RuntimeError('directory handle close previously failed; retain session and diagnostics')
+        if self.parent_fd is not None and self.root_fd is not None:
+            return
+        if (not self.prepared or self.cleaned or self.root_removed or self.parent_fd is not None
+                or self.root_fd is not None or self.directories or self.retained_log is not None
+                or self.reopen_fingerprints is None):
+            raise RuntimeError('session directory handles cannot be safely recovered')
+        fingerprints = self.reopen_fingerprints
+        opened = []
+        def pinned(parent, name, expected, fingerprint):
+            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISDIR(before.st_mode) or directory_identity(before) != expected
+                    or directory_fingerprint(before) != fingerprint):
+                raise RuntimeError(f'session recovery identity changed: {name}')
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=parent)
+            opened.append(fd)
+            if directory_fingerprint(os.fstat(fd)) != fingerprint:
+                raise RuntimeError(f'session recovery identity changed while opening: {name}')
+            return fd
 
-Open this URL after mapping the container port to the host:
-  ${gui_url}
+        def absent(parent, name):
+            try:
+                os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            raise RuntimeError(f'previously removed session directory reappeared: {name}')
 
-If this is running on a remote server over SSH, tunnel the port first:
-  ssh -L ${host_port}:127.0.0.1:${host_port} user@server
+        try:
+            parent = open_directory(self.root.parent)
+            opened.append(parent)
+            if directory_fingerprint(os.fstat(parent))[:-1] != fingerprints['parent']:
+                raise RuntimeError('session parent identity changed during recovery')
+            root = pinned(parent, self.root.name, self.root_identity, fingerprints['root'])
+            directories = {}
+            for name, expected in self.directory_identities.items():
+                if name in self.removed_directories:
+                    absent(root, name)
+                    directories[name] = (None, expected)
+                else:
+                    directories[name] = (pinned(root, name, expected, fingerprints['directories'][name]), expected)
+            log = None
+            if self.retained_log_identity is not None:
+                if 'karaf-data' in self.removed_directories:
+                    raise RuntimeError('retained log parent was removed; recovery refused')
+                log = (pinned(directories['karaf-data'][0], 'log', self.retained_log_identity, fingerprints['log']),
+                       self.retained_log_identity)
+            # Recheck every original binding after all opens, before adopting
+            # any FD. Changed paths never establish new ownership identities.
+            probe = open_directory(self.root.parent)
+            opened.append(probe)
+            if directory_fingerprint(os.fstat(probe))[:-1] != fingerprints['parent']:
+                raise RuntimeError('session parent identity changed while reopening')
+            current = os.stat(self.root.name, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISDIR(current.st_mode) or directory_fingerprint(current) != fingerprints['root']:
+                raise RuntimeError('session root identity changed while reopening')
+            for name, (fd, expected) in directories.items():
+                if name in self.removed_directories:
+                    absent(root, name)
+                else:
+                    current = os.stat(name, dir_fd=root, follow_symlinks=False)
+                    if (not stat.S_ISDIR(current.st_mode)
+                            or directory_fingerprint(current) != fingerprints['directories'][name]
+                            or directory_fingerprint(os.fstat(fd)) != fingerprints['directories'][name]):
+                        raise RuntimeError(f'session child identity changed while reopening: {name}')
+            if log is not None:
+                current = os.stat('log', dir_fd=directories['karaf-data'][0], follow_symlinks=False)
+                if not stat.S_ISDIR(current.st_mode) or directory_fingerprint(current) != fingerprints['log']:
+                    raise RuntimeError('retained log identity changed while reopening')
+            opened.pop()
+            try:
+                os.close(probe)
+            except OSError:
+                self.handle_close_failed = True
+                raise
+            self.parent_fd, self.root_fd = parent, root
+            self.directories, self.retained_log = directories, log
+            opened.clear()
+        finally:
+            failures = []
+            for fd in reversed(opened):
+                try:
+                    os.close(fd)
+                except OSError as error:
+                    failures.append(str(error))
+            if failures:
+                self.handle_close_failed = True
+                raise RuntimeError('recovery handle cleanup failed: ' + '; '.join(failures))
 
-Then open the same URL in your local browser.
+    def verify_root(self):
+        if self.root_fd is None or self.parent_fd is None:
+            raise RuntimeError(f'session directory identity unavailable; retained: {self.root}')
+        current_parent = open_directory(self.root.parent)
+        try:
+            if directory_identity(os.fstat(current_parent)) != self.parent_identity:
+                raise RuntimeError(f'session parent identity changed; retained: {self.root}')
+        finally:
+            os.close(current_parent)
+        current = os.stat(self.root.name, dir_fd=self.parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(current.st_mode) or directory_identity(current) != self.root_identity:
+            raise RuntimeError(f'session identity changed; retained: {self.root}')
 
-Press Ctrl-C to stop the IGV GUI session.
+    def verify_directories(self):
+        self.verify_root()
+        for name, (_, identity) in self.directories.items():
+            try:
+                current = os.stat(name, dir_fd=self.root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                if name in self.removed_directories:
+                    continue
+                raise RuntimeError(f'session directory missing; retained: {self.root / name}')
+            if (name in self.removed_directories or not stat.S_ISDIR(current.st_mode)
+                    or directory_identity(current) != identity):
+                raise RuntimeError(f'session directory identity changed; retained: {self.root / name}')
 
-EOF
+    def preserve_karaf_logs(self):
+        # Component logs remain at the session root. No application data is
+        # moved out through mutable paths; explicit state/output roots are external.
+        self.verify_directories()
 
-Xvfb "$display" -screen 0 "${geometry}x24" -nolisten tcp >/tmp/igv-xvfb.log 2>&1 &
-xvfb_pid=$!
-sleep 1
+    def empty_directory(self, fd, keep=()):
+        """Remove entries relative to pinned directories, never dereference links."""
+        # Rewind the pinned directory: some tmpfs kernels otherwise return a
+        # stale empty first listing when the directory was opened before use.
+        os.lseek(fd, 0, os.SEEK_SET)
+        for name in os.listdir(fd):
+            if name in keep:
+                continue
+            before = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISDIR(before.st_mode):
+                child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                   dir_fd=fd)
+                try:
+                    if directory_identity(os.fstat(child_fd)) != directory_identity(before):
+                        raise RuntimeError(f'cleanup directory identity changed: {name}')
+                    self.empty_directory(child_fd)
+                finally:
+                    os.close(child_fd)
+                after = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if directory_identity(after) != directory_identity(before) or not stat.S_ISDIR(after.st_mode):
+                    raise RuntimeError(f'cleanup directory replaced; retained: {name}')
+                os.rmdir(name, dir_fd=fd)
+            else:
+                # unlink removes the entry itself, including a symlink, not its target.
+                after = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if (after.st_mode, after.st_dev, after.st_ino) != (before.st_mode, before.st_dev, before.st_ino):
+                    raise RuntimeError(f'cleanup entry replaced; retained: {name}')
+                os.unlink(name, dir_fd=fd)
 
-openbox >/tmp/igv-openbox.log 2>&1 &
-openbox_pid=$!
+    def on_signal(self, number, frame):
+        # Record PIDs before acting on signals; never raise asynchronously.
+        self.stopping = self.stopping or (signal.SIGTERM if number == signal.SIGHUP else number)
 
-if [ -n "$password" ]; then
-    auth_file="$HOME/.vnc/passwd"
-    x11vnc -storepasswd "$password" "$auth_file" >/dev/null
-    x11vnc -display "$display" -rfbport "$vnc_port" -rfbauth "$auth_file" -forever -shared -quiet >/tmp/igv-x11vnc.log 2>&1 &
-else
-    x11vnc -display "$display" -rfbport "$vnc_port" -nopw -forever -shared -quiet >/tmp/igv-x11vnc.log 2>&1 &
-fi
-x11vnc_pid=$!
+    def start(self, name, command):
+        if self.stopping:
+            raise InterruptedError()
+        log = (self.root / (name + '.log')).open('wb')
+        self.logs.append(log)
+        child = subprocess.Popen(command, env=self.env, cwd=self.a.outdir, stdout=log,
+                                 stderr=subprocess.STDOUT, start_new_session=True,
+                                 umask=0o022 if name == 'app' else -1)
+        self.children[name] = child
+        try:
+            self.generations[child.pid] = Path(f'/proc/{child.pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+        except FileNotFoundError:
+            self.generations[child.pid] = None
+        (self.root / 'processes.json').write_text(json.dumps({k: v.pid for k, v in self.children.items()}))
+        if self.stopping:
+            raise InterruptedError()
 
-igv "$@" >/tmp/igv-gui.log 2>&1 &
-igv_pid=$!
-sleep 8
-if ! kill -0 "$igv_pid" 2>/dev/null; then
-    echo "igv-gui: IGV exited before the noVNC session was ready." >&2
-    cat /tmp/igv-gui.log >&2 || true
-    exit 1
-fi
+    def check(self, allow_app_exit=False):
+        if self.stopping:
+            raise InterruptedError()
+        # Sample the application first, but accept a normal Quit only after all
+        # critical support processes have been checked in this observation cycle.
+        # Startup remains strict: even app exit 0 before ready is a failure.
+        app = self.children.get('app') if allow_app_exit else None
+        app_status = app.poll() if app is not None else None
+        for name, child in self.children.items():
+            if allow_app_exit and name == 'app':
+                continue
+            if child.poll() is not None:
+                raise RuntimeError(f'{name} exited ({child.returncode}); log: {self.root / (name + ".log")}')
+        if self.stopping:
+            raise InterruptedError()
+        if app_status not in (None, 0):
+            raise RuntimeError(f'app exited ({app_status}); log: {self.root / "app.log"}')
+        return app_status
 
-/opt/noVNC/utils/novnc_proxy --listen "0.0.0.0:${port}" --vnc "localhost:${vnc_port}" >/tmp/igv-novnc.log 2>&1 &
-novnc_pid=$!
+    def run(self, argv):
+        return subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=3)
 
-set +e
-wait "$novnc_pid"
-status=$?
-set -e
-if [ "$status" -ne 0 ] && [ "$status" -ne 130 ] && [ "$status" -ne 143 ]; then
-    echo "igv-gui: noVNC exited with status ${status}." >&2
-    cat /tmp/igv-novnc.log >&2 || true
-fi
-cleanup
-exit "$status"
+    def capture_endpoints(self):
+        child = self.children.get('xvfb')
+        if not child:
+            return
+        number = self.a.display[1:]
+        lock = Path('/tmp/.X' + number + '-lock')
+        sock = Path('/tmp/.X11-unix/X' + number)
+        try:
+            ls = lock.lstat()
+            if not stat.S_ISREG(ls.st_mode) or int(lock.read_text().strip()) != child.pid:
+                return
+            self.endpoints[str(lock)] = (ls.st_dev, ls.st_ino)
+            ss = sock.lstat()
+            if stat.S_ISSOCK(ss.st_mode):
+                self.endpoints[str(sock)] = (ss.st_dev, ss.st_ino)
+        except (OSError, ValueError):
+            pass
+
+    def listener_owned(self, name, port):
+        # Verify listener ownership in /proc; never reuse an unrelated listener.
+        child = self.children[name]
+        sockets = set()
+        for fd in Path(f'/proc/{child.pid}/fd').glob('*'):
+            try:
+                sockets.add(os.readlink(fd))
+            except OSError:
+                pass
+        for line in Path('/proc/net/tcp').read_text().splitlines()[1:]:
+            cols = line.split()
+            if int(cols[1].split(':')[1], 16) == port and cols[3] == '0A':
+                if 'socket:[' + cols[9] + ']' in sockets:
+                    return True
+        return False
+
+    def window(self):
+        found = self.run(['xdotool', 'search', '--onlyvisible', '--pid', str(self.children['app'].pid)])
+        if found.returncode:
+            return None
+        for wid in found.stdout.split():
+            # Match the official main window, not an unrelated dialog.
+            classname = self.run(['xprop', '-id', wid, 'WM_CLASS']).stdout
+            if not any(tag in classname.lower() for tag in ('igv', 'java')):
+                continue
+            title = self.run(['xdotool', 'getwindowname', wid]).stdout.strip()
+            if not (title.startswith('Integrative Genomics Viewer') or title.startswith('IGV') or title.startswith('igvtools')):
+                continue
+            w, h = self.a.width - 32, self.a.height - 88
+            # IGVTools deliberately sets setResizable(false); preserve its native
+            # dialog geometry instead of repeatedly fighting Java's size hints.
+            if not self.a.tools:
+                self.run(['xdotool', 'windowsize', wid, str(w), str(h)])
+            self.run(['xdotool', 'windowmove', wid, '16', '56'])
+            # Use absolute X coordinates after Java/AWT reparenting.
+            data = self.run(['xwininfo', '-id', wid]).stdout
+            labels = {'X': 'Absolute upper-left X', 'Y': 'Absolute upper-left Y',
+                      'WIDTH': 'Width', 'HEIGHT': 'Height'}
+            values = {'WINDOW': wid}
+            for key, label in labels.items():
+                match = re.search(r'^\s*' + label + r':\s*(-?\d+)\s*$', data, re.M)
+                if match:
+                    values[key] = match.group(1)
+            if not all(key in values for key in ('X', 'Y', 'WIDTH', 'HEIGHT')):
+                continue
+            x, y, width, height = [int(values[k]) for k in ('X', 'Y', 'WIDTH', 'HEIGHT')]
+            size_ok = (300 <= width <= w and 150 <= height <= h) if self.a.tools else (width == w and height == h)
+            if size_ok and 0 <= x <= 40 and 32 <= y <= 88 and x + width <= self.a.width and y + height <= self.a.height:
+                values['desktop'] = self.a.geometry
+                values['layout'] = 'upstream-fixed-dialog' if self.a.tools else 'desktop-fill'
+                (self.root / 'geometry.json').write_text(json.dumps(values))
+                return values
+        return None
+
+    def serve(self):
+        a = self.a
+        emit(f'starting; logs: {self.root}')
+        url = f'http://{a.url_host}:{a.host_port or a.port}/vnc.html?autoconnect=1&resize=scale'
+        emit(f'host URL: {url}')
+        emit(f'SSH: ssh -N -L {a.host_port or a.port}:127.0.0.1:{a.host_port or a.port} USER@HOST')
+        emit('Ctrl-C stops this session; no TLS: publish HTTP only on host loopback or use SSH. VNC password is not transport encryption.')
+        # Output remains user-readable; private session directories stay 0700.
+        private_mask = os.umask(0o022)
+        try:
+            a.outdir.mkdir(parents=True, exist_ok=True)
+        finally:
+            os.umask(private_mask)
+        if not os.access(a.outdir, os.W_OK):
+            raise RuntimeError('output directory is not writable')
+        for endpoint in (Path('/tmp/.X' + a.display[1:] + '-lock'), Path('/tmp/.X11-unix/X' + a.display[1:])):
+            if os.path.lexists(endpoint):
+                raise RuntimeError(f'occupied display endpoint (not removed): {endpoint}')
+        for host, port in ((a.bind_address, a.port), ('127.0.0.1', a.vnc_port)):
+            with socket.socket() as probe:
+                # Allow TIME_WAIT like the actual listener; do not use SO_REUSEPORT.
+                # Active listeners still fail; verify PID/inode ownership after startup.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind((host, port))
+        web = self.root / 'web'
+        self.make_directory('web')
+        for source in Path('/opt/noVNC').iterdir():
+            (web / source.name).symlink_to(source)
+        (web / 'session-id').write_text(self.token)
+        limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(limit[0], 1024), limit[1]))
+        self.start('xvfb', ['Xvfb', a.display, '-screen', '0', a.geometry + 'x24', '-nolisten', 'tcp', '-ac'])
+        deadline = time.monotonic() + a.startup_timeout
+        while self.run(['xdpyinfo', '-display', a.display]).returncode:
+            self.check()
+            self.capture_endpoints()
+            if time.monotonic() > deadline:
+                raise RuntimeError('Xvfb startup timeout')
+            time.sleep(0.05)
+        self.capture_endpoints()
+        self.start('wm', ['openbox', '--sm-disable'])
+        vnc = ['x11vnc', '-display', a.display, '-rfbport', str(a.vnc_port), '-localhost',
+               '-forever', '-shared', '-noxdamage', '-noxrecord', '-quiet']
+        if a.password is not None:
+            auth = self.root / 'vnc-auth'
+            result = self.run(['x11vnc', '-storepasswd', a.password, str(auth)])
+            if result.returncode:
+                raise RuntimeError('could not create private VNC authentication file')
+            auth.chmod(0o600)
+            self.auth_identity = directory_identity(auth.lstat())
+            vnc += ['-rfbauth', str(auth)]
+        else:
+            vnc += ['-nopw']
+        self.start('vnc', vnc)
+        self.start('bridge', ['/usr/bin/websockify', '--web', str(web),
+                              a.bind_address + ':' + str(a.port), '127.0.0.1:' + str(a.vnc_port)])
+        # Prepare JVM argv in this process: the recorded app PID is the real JVM.
+        launcher = __import__('igv_runtime')
+        argv = list(a.igv_args)
+        if a.resource:
+            argv = ['--genome', launcher.resource_genome(a.resource)] + argv
+        if a.genome:
+            argv = ['--genome', str(a.genome)] + argv
+        command = launcher.java_command('igvtools_gui' if a.tools else 'igv', argv, self.env)
+        self.start('app', command)
+        spec = importlib.util.spec_from_file_location('rfb', '/opt/igv/libexec/rfb-probe.py')
+        rfb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rfb)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        while True:
+            self.check()
+            try:
+                owned = self.listener_owned('vnc', a.vnc_port) and self.listener_owned('bridge', a.port)
+                if owned:
+                    rfb.probe(a.vnc_port, a.width, a.height, password=a.password is not None, timeout=0.5)
+                    with opener.open(f'http://127.0.0.1:{a.port}/session-id', timeout=0.5) as response:
+                        matched = response.read(128).decode() == self.token
+                    if matched and self.window():
+                        self.check()
+                        break
+            except (OSError, ValueError):
+                pass
+            if time.monotonic() > deadline:
+                raise RuntimeError('GUI readiness timeout; inspect component logs')
+            time.sleep(0.1)
+        emit(f'ready; {url}; desktop={a.geometry}; geometry={self.root / "geometry.json"}')
+        while True:
+            if self.stopping:
+                raise InterruptedError()
+            if self.check(allow_app_exit=True) == 0:
+                return 0
+            time.sleep(0.1)
+
+    def cleanup(self):
+        if self.root is None or self.cleaned:
+            return
+        emit(f'stopping; logs: {self.root}')
+        errors = []
+
+        def failed(message):
+            if message not in errors:
+                errors.append(message)
+                emit('ERROR: cleanup: ' + message)
+
+        # Early signals may precede X sockets; capture only owned endpoints.
+        if 'xvfb' in self.children and not self.endpoints:
+            try:
+                for _ in range(10):
+                    self.capture_endpoints()
+                    if self.endpoints or self.children['xvfb'].poll() is not None:
+                        break
+                    time.sleep(0.05)
+            except OSError as error:
+                failed(f'capture endpoints: {error}')
+
+        def owned_group(child):
+            generation = self.generations.get(child.pid)
+            if child.pid <= 1:
+                return False
+            # A known process generation or an inherited private HOME proves
+            # ownership even when the original group leader has already exited.
+            owned = False
+            unreadable = False
+            try:
+                processes = list(Path('/proc').iterdir())
+            except OSError as error:
+                failed(f'cannot inspect process groups: {error}')
+                return False
+            for proc in processes:
+                if not proc.name.isdigit():
+                    continue
+                member = False
+                try:
+                    fields = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+                    if fields[0] == 'Z' or int(fields[2]) != child.pid or int(fields[3]) != child.pid:
+                        continue
+                    member = True
+                    if generation is None:
+                        failed(f'process group {child.pid} has no recorded generation; not signalled')
+                        return False
+                    if int(proc.name) == child.pid and fields[19] == generation:
+                        owned = True
+                        continue
+                    try:
+                        inherited = ('HOME=' + self.env['HOME']).encode() in (proc / 'environ').read_bytes().split(b'\0')
+                    except (FileNotFoundError, ProcessLookupError):
+                        continue
+                    except PermissionError:
+                        # Linux can deny environ while a process is exiting.
+                        # Only absence or a same-generation zombie proves that
+                        # this observed member no longer needs a signal.
+                        exited = False
+                        for attempt in range(3):
+                            try:
+                                latest = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+                            except (FileNotFoundError, ProcessLookupError):
+                                exited = True
+                                break
+                            if (latest[19], latest[2], latest[3]) != (fields[19], fields[2], fields[3]):
+                                break
+                            if latest[0] == 'Z':
+                                exited = True
+                                break
+                            if attempt < 2:
+                                time.sleep(0.02)
+                        if exited:
+                            continue
+                        raise
+                    if int(fields[19]) >= int(generation) and inherited:
+                        owned = True
+                    else:
+                        failed(f'process group {child.pid} contains an unverified member {proc.name}; not signalled')
+                        return False
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                except (OSError, ValueError, IndexError) as error:
+                    # An unrelated process may be unreadable. A live direct
+                    # child is checked below; never infer ownership from that.
+                    if member or int(proc.name) == child.pid:
+                        failed(f'cannot verify child {child.pid} identity at {proc}: {type(error).__name__}: {error}')
+                        return False
+                    unreadable = True
+            if unreadable and not owned:
+                # A hidden member must not be mistaken for an absent group.
+                # Signal 0 only probes existence; it never terminates a process.
+                try:
+                    os.killpg(child.pid, 0)
+                except ProcessLookupError:
+                    pass
+                except OSError as error:
+                    failed(f'cannot verify process group {child.pid} is absent: {error}')
+                else:
+                    failed(f'cannot verify process group {child.pid} is absent; unreadable process identity')
+            return owned
+
+        def stop_group(child, sig):
+            try:
+                if owned_group(child):
+                    os.killpg(child.pid, sig)
+                # An exiting process can have no live /proc member before
+                # waitpid reports its status. Do not signal unverified groups;
+                # the bounded wait and final group check below still fail if
+                # a child or descendant remains alive.
+            except ProcessLookupError:
+                pass  # The verified group exited between inspection and signal.
+            except OSError as error:
+                failed(f'signal {sig} to group {child.pid}: {error}')
+
+        for child in reversed(list(self.children.values())):
+            stop_group(child, signal.SIGTERM)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and any(c.poll() is None for c in self.children.values()):
+            time.sleep(0.05)
+        for child in self.children.values():
+            stop_group(child, signal.SIGKILL)
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                failed(f'child {child.pid} did not stop within timeout')
+            except OSError as error:
+                failed(f'wait for child {child.pid}: {error}')
+            # wait() reaps only the direct child, not its surviving descendants.
+            deadline = time.monotonic() + 2
+            while owned_group(child):
+                if time.monotonic() >= deadline:
+                    failed(f'process group {child.pid} did not stop within timeout')
+                    break
+                time.sleep(0.05)
+        if not errors:
+            for name, identity in self.endpoints.items():
+                path = Path(name)
+                try:
+                    info = path.lstat()
+                    if stat.S_ISLNK(info.st_mode) or (info.st_dev, info.st_ino) != identity:
+                        failed(f'endpoint identity changed; retained: {path}')
+                    else:
+                        path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as error:
+                    failed(f'endpoint {path}: {error}')
+        for log in self.logs:
+            try:
+                log.close()
+            except OSError as error:
+                failed(f'close diagnostic log: {error}')
+        if errors:
+            raise RuntimeError('; '.join(errors) + f'; session retained for diagnosis: {self.root}')
+        if not self.prepared:
+            raise RuntimeError(f'session initialization incomplete; retained for diagnosis: {self.root}')
+        self.reopen_handles()
+        self.verify_directories()
+        if self.auth_identity is not None:
+            info = os.stat('vnc-auth', dir_fd=self.root_fd, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or directory_identity(info) != self.auth_identity:
+                raise RuntimeError('VNC authentication file identity changed; retain diagnostics')
+            os.unlink('vnc-auth', dir_fd=self.root_fd)
+            self.auth_identity = None
+        if self.a.log_dir:
+            self.preserve_karaf_logs()
+        for name, (fd, _) in self.directories.items():
+            if name in self.removed_directories:
+                continue
+            self.verify_directories()
+            keep = ('log',) if name == 'karaf-data' and self.retained_log is not None else ()
+            if keep:
+                self.preserve_karaf_logs()
+            self.empty_directory(fd, keep=keep)
+            self.verify_directories()
+            if keep:
+                self.preserve_karaf_logs()
+                continue
+            os.rmdir(name, dir_fd=self.root_fd)
+            self.removed_directories.add(name)
+        self.verify_directories()
+        if not self.a.log_dir:
+            self.empty_directory(self.root_fd)
+            self.verify_root()
+            os.rmdir(self.root.name, dir_fd=self.parent_fd)
+            self.root_removed = True
+        self.close_handles()
+        self.cleaned = True
+        emit('stopped; owned process groups, display endpoints and temporary session cleaned')
+
+
+def main():
+    os.umask(0o077)
+    session = Session(arguments())
+    result = 1
+    try:
+        session.prepare()
+        result = session.serve()
+    except InterruptedError:
+        result = 128 + session.stopping
+    except Exception as error:
+        emit(f'ERROR: {error}')
+        for name in session.children:
+            path = session.root / (name + '.log')
+            try:
+                tail = path.read_text(errors='replace').splitlines()[-10:]
+                emit(f'{name} log tail:\n' + '\n'.join(tail))
+            except OSError as error:
+                emit(f'{name} diagnostic unavailable: {error}')
+    finally:
+        before_cleanup = result
+        try:
+            session.cleanup()
+        except Exception as error:
+            emit(f'ERROR: cleanup incomplete: {error}')
+            if result == 0:
+                result = 1
+        if session.stopping and before_cleanup == 0:
+            result = 128 + session.stopping
+        try:
+            session.close_handles()
+        except Exception as error:
+            emit(f'ERROR: cleanup incomplete: {error}')
+            if result == 0:
+                result = 1
+    return result
+
+
+if __name__ == '__main__':
+    sys.exit(main())

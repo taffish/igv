@@ -1,0 +1,14 @@
+{
+  "catalog": "IGV 2.19.9-r1 reviewed sequence recipes",
+  "upstream_metadata_commit": "28a3b40cdb8313e90e84617e5336f3f947221c0d",
+  "scope": "Only listed members; annotations and online hubs are separate explicit inputs. Custom fixed recipes are accepted.",
+  "members": [
+    {
+      "id": "sacCer3",
+      "version": "GCF_000146045.2-sequence-20261122",
+      "bytes": 3558746,
+      "source": "https://raw.githubusercontent.com/igvteam/igv-data/28a3b40cdb8313e90e84617e5336f3f947221c0d/genomes/json/sacCer3.json",
+      "license": "IGV metadata MIT; UCSC sequence public-use notice; see recipe"
+    }
+  ]
+}
